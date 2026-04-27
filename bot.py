@@ -6,10 +6,7 @@ from datetime import datetime, timezone
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
-COINS = ["BTC","ETH","BNB","SOL"]
-
-MIN_CONFIDENCE = 20
-
+COINS = ["BTC", "ETH", "BNB", "SOL"]
 
 def post_signal(signal):
     url = f"{SUPABASE_URL}/rest/v1/bot_signals"
@@ -26,35 +23,39 @@ def post_signal(signal):
     print("Response:", r.text)
 
 
-def main():
-    print("🚀 Bot started at", datetime.now(timezone.utc))
-
-    # 🔥 TEST SIGNAL (guaranteed insert)
-    test_signal = {
-        "coin": "BTC",
-        "symbol": "BTCUSDT",
-        "direction": "LONG",
-        "confidence": 99,
+def build_signal(coin, direction):
+    return {
+        "coin": coin,
+        "symbol": f"{coin}USDT",
+        "direction": direction,
+        "action": "BUY" if direction == "LONG" else "SELL",
+        "confidence": 90,
         "status": "ACTIVE",
+        "exchange": "binance",
+        "market_type": "FUTURES",
+        "leverage": 5,
+        "source": "tradingview",
+        "risk": "MEDIUM RISK",
+        "timeframe": 60,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
+
+def main():
+    print("🚀 Bot started at", datetime.now(timezone.utc))
+
+    # 🔥 TEST SIGNAL
+    test_signal = build_signal("BTC", "LONG")
+    print("Sending test signal...")
     post_signal(test_signal)
 
-    # 🔄 Simple scan (demo)
+    # 🔄 LOOP SIGNALS
     for coin in COINS:
         print("Scanning:", coin)
 
-        signal = {
-            "coin": coin,
-            "symbol": f"{coin}USDT",
-            "direction": "LONG",
-            "confidence": 50,
-            "status": "ACTIVE",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-
+        signal = build_signal(coin, "LONG")
         post_signal(signal)
+
         time.sleep(1)
 
     print("✅ Done")
