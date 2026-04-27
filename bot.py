@@ -63,14 +63,14 @@ return v
 def rsi(closes, p=14):
 if len(closes) < p+1:
 return None
-g,l = [],[]
-for i in range(1,len(closes)):
-d = closes[i]-closes[i-1]
-g.append(max(d,0))
-l.append(abs(min(d,0)))
+g, l = [], []
+for i in range(1, len(closes)):
+d = closes[i] - closes[i-1]
+g.append(max(d, 0))
+l.append(abs(min(d, 0)))
 ag = sum(g[-p:])/p
 al = sum(l[-p:])/p
-return 100 if al==0 else 100-(100/(1+ag/al))
+return 100 if al == 0 else 100 - (100/(1+ag/al))
 
 def macd_hist(closes):
 if len(closes) < 35:
@@ -90,8 +90,8 @@ if len(candles) < p+1:
 return None
 trs = []
 for i in range(1, len(candles)):
-h,l,pc = candles[i]["high"],candles[i]["low"],candles[i-1]["close"]
-trs.append(max(h-l,abs(h-pc),abs(l-pc)))
+h, l, pc = candles[i]["high"], candles[i]["low"], candles[i-1]["close"]
+trs.append(max(h-l, abs(h-pc), abs(l-pc)))
 return sum(trs[-p:])/p
 
 # ================= ANALYSIS =================
@@ -146,9 +146,9 @@ if rv > av*1.3:
         bear += 10
 
 if bull >= MIN_CONFIDENCE and bull > bear:
-    direction,conf = "LONG",min(bull,95)
+    direction, conf = "LONG", min(bull, 95)
 elif bear >= MIN_CONFIDENCE and bear > bull:
-    direction,conf = "SHORT",min(bear,95)
+    direction, conf = "SHORT", min(bear, 95)
 else:
     return None
 
@@ -164,22 +164,22 @@ else:
     tp2 = price-(atr_v*3.5)
 
 risk = abs(price-sl_p)
-rr = round(abs(tp1-price)/risk,1) if risk > 0 else 1.5
+rr = round(abs(tp1-price)/risk, 1) if risk > 0 else 1.5
 
 return {
-    "coin":coin,
-    "direction":direction,
-    "confidence":int(conf),
-    "entry_low":round(price*0.998,dec),
-    "entry_high":round(price*1.002,dec),
-    "sl":round(sl_p,dec),
-    "tp1":round(tp1,dec),
-    "tp2":round(tp2,dec),
-    "rr":"1:"+str(rr),
-    "risk":"AUTO",
-    "valid_mins":60,
-    "status":"ACTIVE",
-    "source":"ai_bot"
+    "coin": coin,
+    "direction": direction,
+    "confidence": int(conf),
+    "entry_low": round(price*0.998, dec),
+    "entry_high": round(price*1.002, dec),
+    "sl": round(sl_p, dec),
+    "tp1": round(tp1, dec),
+    "tp2": round(tp2, dec),
+    "rr": "1:"+str(rr),
+    "risk": "AUTO",
+    "valid_mins": 60,
+    "status": "ACTIVE",
+    "source": "ai_bot"
 }
 ```
 
@@ -193,7 +193,7 @@ r = requests.post(url, headers=HEADERS, json=sig, timeout=10)
 ```
     print("POST:", sig["coin"], sig["direction"], "→", r.status_code)
 
-    if r.status_code not in (200,201,204):
+    if r.status_code not in (200, 201, 204):
         print("RESPONSE:", r.text)
 
 except Exception as e:
