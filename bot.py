@@ -11,7 +11,7 @@ COINS = [
     "DOT","MATIC","LINK","LTC","NEAR","TRX","TON","ATOM"
 ]
 
-MIN_CONFIDENCE = 65
+MIN_CONFIDENCE = 20  # 🔥 TEST MODE
 
 
 # ================= BINANCE =================
@@ -25,10 +25,10 @@ def get_klines(symbol):
     }
 
     r = requests.get(url, params=params)
+    print("Binance:", symbol, r.status_code)
+
     if r.status_code != 200:
         return None
-
-    data = r.json()
 
     return [
         {
@@ -37,7 +37,7 @@ def get_klines(symbol):
             "low": float(c[3]),
             "volume": float(c[5]),
         }
-        for c in data
+        for c in r.json()
     ]
 
 
@@ -60,8 +60,7 @@ def rsi(closes, period=14):
     if len(closes) < period + 1:
         return None
 
-    gains = 0
-    losses = 0
+    gains, losses = 0, 0
 
     for i in range(-period, 0):
         diff = closes[i] - closes[i - 1]
@@ -107,19 +106,16 @@ def analyze(coin):
     bull = 0
     bear = 0
 
-    # RSI
     if r < 30:
         bull += 30
     elif r > 70:
         bear += 30
 
-    # MACD
     if m > 0:
         bull += 20
     else:
         bear += 20
 
-    # EMA Trend
     if e20 > e50:
         bull += 20
     else:
@@ -158,6 +154,7 @@ def post_signal(signal):
     r = requests.post(url, headers=headers, json=signal)
 
     print("POST:", signal["coin"], signal["direction"], "→", r.status_code)
+    print("RESPONSE:", r.text)
 
 
 # ================= MAIN =================
@@ -168,11 +165,23 @@ def main():
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise Exception("Missing Supabase credentials")
 
+    # 🔥 FORCE TEST SIGNAL (guaranteed insert)
+    test_signal = {
+        "coin": "BTC",
+        "direction": "LONG",
+        "confidence": 99,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+
+    print("Sending test signal...")
+    post_signal(test_signal)
+
+    # 🔄 REAL SCAN
     for coin in COINS:
         print("Scanning:", coin)
 
         signal = analyze(coin)
-        time.sleep(0.4)
+        time.sleep(0.3)
 
         if signal:
             print("Signal found:", signal)
