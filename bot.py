@@ -13,15 +13,15 @@ headers = {
     "Prefer": "return=minimal"
 }
 
-COINS = ["BTC","ETH","BNB","SOL","XRP","ADA","AVAX","DOGE","DOT","MATIC","LINK","LTC","NEAR","TRX","TON","ATOM"]
-MIN_CONFIDENCE = 1
+COINS = ["BTC","ETH","BNB","SOL","XRP","ADA","AVAX","DOGE","DOT","LTC","LINK","ATOM","NEAR","TRX","TON","AAVE"]
+MIN_CONFIDENCE = 30
 MAX_ACTIVE = 8
 
 def get_klines(symbol, interval="15m", limit=100):
     try:
-        r = requests.get("https://api.binance.com/api/v3/klines",
+        r = requests.get("https://api.binance.us/api/v3/klines",
             params={"symbol": symbol + "USDT", "interval": interval, "limit": limit}, timeout=10)
-        print("  Binance " + symbol + ": " + str(r.status_code))
+        print("  Binance.us " + symbol + ": " + str(r.status_code))
         if r.status_code != 200:
             return None
         data = r.json()
@@ -29,7 +29,7 @@ def get_klines(symbol, interval="15m", limit=100):
             return None
         return [{"open":float(c[1]),"high":float(c[2]),"low":float(c[3]),"close":float(c[4]),"volume":float(c[5])} for c in data]
     except Exception as e:
-        print("  Binance error: " + str(e))
+        print("  Error: " + str(e))
         return None
 
 def ema(vals, p):
@@ -108,7 +108,7 @@ def analyze(coin):
     e20 = ema(closes, 20)
     e50 = ema(closes, 50)
     atr_v = calc_atr(candles)
-    print("  price=" + str(round(price,2)) + " rsi=" + str(round(rsi_v,1) if rsi_v else None) + " hist=" + str(round(hist,4) if hist else None))
+    print("  price=" + str(round(price,2)) + " rsi=" + str(round(rsi_v,1) if rsi_v else None))
     if not all([rsi_v, e20, e50, atr_v]):
         print("  indicators missing")
         return None
