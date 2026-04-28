@@ -13,7 +13,7 @@ headers = {
     "Prefer": "return=minimal"
 }
 
-COINS = ["BTC","ETH","BNB","SOL","XRP","ADA","AVAX","DOGE","DOT","LTC","LINK","ATOM","NEAR","TRX","TON","AAVE"]
+COINS = ["BTC","ETH","BNB","SOL","XRP","ADA","AVAX","DOGE","DOT","LTC","LINK","ATOM","NEAR","TRX","AAVE"]
 MIN_CONFIDENCE = 30
 MAX_ACTIVE = 8
 
@@ -141,9 +141,11 @@ def analyze(coin):
     print("  bull=" + str(bull) + " bear=" + str(bear))
     if bull >= MIN_CONFIDENCE and bull > bear:
         direction = "LONG"
+        action = "BUY"
         conf = min(bull, 95)
     elif bear >= MIN_CONFIDENCE and bear > bull:
         direction = "SHORT"
+        action = "SELL"
         conf = min(bear, 95)
     else:
         print("  no signal")
@@ -163,6 +165,7 @@ def analyze(coin):
     rl = "LOW RISK" if ap < 1.5 else ("MEDIUM RISK" if ap < 3 else "HIGH RISK")
     return {
         "coin": coin,
+        "action": action,
         "direction": direction,
         "confidence": int(conf),
         "entry_low": round(price * 0.998, dec),
