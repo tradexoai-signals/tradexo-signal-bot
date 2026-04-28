@@ -21,10 +21,15 @@ def get_klines(symbol, interval="15m", limit=100):
     try:
         r = requests.get("https://api.binance.com/api/v3/klines",
             params={"symbol": symbol + "USDT", "interval": interval, "limit": limit}, timeout=10)
+        print("  Binance " + symbol + ": " + str(r.status_code))
         if r.status_code != 200:
             return None
-        return [{"open":float(c[1]),"high":float(c[2]),"low":float(c[3]),"close":float(c[4]),"volume":float(c[5])} for c in r.json()]
-    except:
+        data = r.json()
+        if not data or len(data) < 50:
+            return None
+        return [{"open":float(c[1]),"high":float(c[2]),"low":float(c[3]),"close":float(c[4]),"volume":float(c[5])} for c in data]
+    except Exception as e:
+        print("  Binance error: " + str(e))
         return None
 
 def ema(vals, p):
@@ -94,6 +99,7 @@ def post_signal(sig):
 def analyze(coin):
     candles = get_klines(coin)
     if not candles or len(candles) < 50:
+        print("  no candles for " + coin)
         return None
     closes = [c["close"] for c in candles]
     price = closes[-1]
@@ -102,7 +108,9 @@ def analyze(coin):
     e20 = ema(closes, 20)
     e50 = ema(closes, 50)
     atr_v = calc_atr(candles)
+    print("  price=" + str(round(price,2)) + " rsi=" + str(round(rsi_v,1) if rsi_v else None) + " hist=" + str(round(hist,4) if hist else None))
     if not all([rsi_v, e20, e50, atr_v]):
+        print("  indicators missing")
         return None
     bull = 0
     bear = 0
@@ -130,6 +138,7 @@ def analyze(coin):
             bull += 10
         else:
             bear += 10
+    print("  bull=" + str(bull) + " bear=" + str(bear))
     if bull >= MIN_CONFIDENCE and bull > bear:
         direction = "LONG"
         conf = min(bull, 95)
@@ -137,6 +146,7 @@ def analyze(coin):
         direction = "SHORT"
         conf = min(bear, 95)
     else:
+        print("  no signal")
         return None
     dec = 2 if price > 100 else (4 if price > 1 else 6)
     if direction == "LONG":
