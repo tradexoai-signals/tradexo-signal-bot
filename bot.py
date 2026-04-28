@@ -14,7 +14,7 @@ headers = {
 }
 
 COINS = ["BTC","ETH","BNB","SOL","XRP","ADA","AVAX","DOGE","DOT","MATIC","LINK","LTC","NEAR","TRX","TON","ATOM"]
-MIN_CONFIDENCE = 45
+MIN_CONFIDENCE = 10
 MAX_ACTIVE = 8
 
 def get_klines(symbol, interval="15m", limit=100):
