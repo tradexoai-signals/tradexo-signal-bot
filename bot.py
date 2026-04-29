@@ -36,32 +36,49 @@ CONFIG = {
 }
 
 SUPA = CONFIG["SUPABASE_URL"]
-KEY = CONFIG["SUPABASE_KEY"]
-HD = {
+KEY  = CONFIG["SUPABASE_KEY"]
+HD   = {
     "apikey": KEY,
     "Authorization": "Bearer " + KEY,
     "Content-Type": "application/json",
     "Prefer": "return=minimal"
 }
 
-def send_telegram(chat_id, text):
-    try:
-        r = requests.post(
-            "https://api.telegram.org/bot" + CONFIG["TELEGRAM_TOKEN"] + "/sendMessage",
-            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-            timeout=10)
-        if r.status_code != 200:
-            log.warning("Telegram failed %s: %s", chat_id, r.text[:80])
-    except Exception as e:
-        log.error("Telegram error: %s", e)
+_tg_cache = set()
+
+def send_telegram(chat_id, text, cache_key=None):
+    global _tg_cache
+    if cache_key:
+        k = str(chat_id)+":"+cache_key
+        if k in _tg_cache:
+            log.info("  TG skip dup: %s", cache_key); return
+        _tg_cache.add(k)
+    if len(text) > 4000:
+        text = text[:3997]+"..."
+    for attempt in range(1,4):
+        try:
+            r = requests.post(
+                "https://api.telegram.org/bot"+CONFIG["TELEGRAM_TOKEN"]+"/sendMessage",
+                json={"chat_id":chat_id,"text":text,"parse_mode":"HTML"},timeout=10)
+            if r.status_code==200:
+                log.info("  TG sent to %s", chat_id); return
+            if r.status_code==400 and "parse" in r.text.lower():
+                plain=text.replace("<b>","").replace("</b>","").replace("<i>","").replace("</i>","")
+                requests.post("https://api.telegram.org/bot"+CONFIG["TELEGRAM_TOKEN"]+"/sendMessage",
+                    json={"chat_id":chat_id,"text":plain},timeout=10)
+                return
+            log.warning("TG attempt %d failed: %d",attempt,r.status_code)
+        except Exception as e:
+            log.error("TG attempt %d error: %s",attempt,e)
+        if attempt<3: time.sleep(1)
 
 def build_signal_message(sig, status_type="new"):
-    coin = sig.get("coin","")
     direction = sig.get("direction","")
+    coin = sig.get("coin","")
     emoji = "🟢" if direction == "LONG" else "🔴"
     arrow = "📈" if direction == "LONG" else "📉"
     if status_type == "new":
-        return (
+        msg = (
             arrow + " <b>NEW SIGNAL — " + coin + "/USDT</b>\n\n"
             + emoji + " <b>Direction:</b> " + direction + "\n"
             + "🎯 <b>Confidence:</b> " + str(sig.get("confidence","")) + "%\n"
@@ -77,28 +94,42 @@ def build_signal_message(sig, status_type="new"):
         )
     elif status_type == "tp1":
         pnl = sig.get("pnl_pct","")
-        return (
+        msg = (
             "✅ <b>TP1 HIT — " + coin + "/USDT</b>\n\n"
             + "📈 <b>Direction:</b> " + direction + "\n"
             + "💵 <b>Entry:</b> $" + str(sig.get("entry_price","")) + "\n"
             + "🎯 <b>Exit:</b> $" + str(sig.get("exit_price","")) + "\n"
             + ("💰 <b>PnL:</b> +" + str(pnl) + "%\n" if pnl else "")
+            + "\n💡 <i>Move SL to breakeven now 🔥</i>"
             + "\n🤖 <i>TradexoAI Signal Bot</i>"
         )
-    else:
+    elif status_type == "tp2":
         pnl = sig.get("pnl_pct","")
-        return (
+        msg = (
+            "🏆 <b>TP2 HIT — " + coin + "/USDT</b>\n\n"
+            + "📈 <b>Direction:</b> " + direction + "\n"
+            + "💵 <b>Entry:</b> $" + str(sig.get("entry_price","")) + "\n"
+            + "🎯 <b>Exit:</b> $" + str(sig.get("exit_price","")) + "\n"
+            + ("💰 <b>PnL:</b> +" + str(pnl) + "%\n" if pnl else "")
+            + "\n🔥 <i>Full target reached! Outstanding trade!</i>"
+            + "\n🤖 <i>TradexoAI Signal Bot</i>"
+        )
+    elif status_type == "sl":
+        pnl = sig.get("pnl_pct","")
+        msg = (
             "🛑 <b>SL HIT — " + coin + "/USDT</b>\n\n"
             + "📉 <b>Direction:</b> " + direction + "\n"
             + "💵 <b>Entry:</b> $" + str(sig.get("entry_price","")) + "\n"
             + "❌ <b>Exit:</b> $" + str(sig.get("exit_price","")) + "\n"
             + ("📊 <b>PnL:</b> " + str(pnl) + "%\n" if pnl else "")
+            + "\n⚠️ <i>Losses are part of trading. Risk management is key!</i>"
             + "\n🤖 <i>TradexoAI Signal Bot</i>"
         )
+    return msg
 
 def notify_all_channels(sig, status_type="new"):
     msg = build_signal_message(sig, status_type)
-    ch = CONFIG["TELEGRAM_CHANNELS"]
+    channels = CONFIG["TELEGRAM_CHANNELS"]
     if status_type == "new":
         free_msg = (
             ("📈" if sig.get("direction")=="LONG" else "📉")
@@ -108,27 +139,39 @@ def notify_all_channels(sig, status_type="new"):
             + "🔒 <i>Full details available for paid members</i>\n"
             + "👉 tradexoai.com"
         )
-        send_telegram(ch["free"], free_msg)
+        coin_k = sig.get("coin","")
+        send_telegram(channels["free"], free_msg, cache_key="new_free:"+coin_k)
+        time.sleep(0.3)
         for plan in ["starter","pro","vip"]:
-            send_telegram(ch[plan], msg)
+            send_telegram(channels[plan], msg, cache_key="new_"+plan+":"+coin_k)
+            time.sleep(0.2)
     else:
-        for c in ch.values():
-            send_telegram(c, msg)
+        coin_k2 = sig.get("coin","")
+        for plan_n, chat_id in channels.items():
+            send_telegram(chat_id, msg, cache_key=status_type+":"+plan_n+":"+coin_k2)
+            time.sleep(0.2)
 
-def get_klines(symbol, interval="15m", limit=150):
-    try:
-        r = requests.get(CONFIG["BINANCE_URL"],
-            params={"symbol": symbol+"USDT","interval":interval,"limit":limit},timeout=10)
-        if r.status_code != 200:
-            log.warning("Binance %s: %d", symbol, r.status_code)
-            return None
-        data = r.json()
-        if not data or len(data) < 50:
-            return None
-        return [{"open":float(c[1]),"high":float(c[2]),"low":float(c[3]),"close":float(c[4]),"volume":float(c[5])} for c in data]
-    except Exception as e:
-        log.error("Fetch %s: %s", symbol, e)
-        return None
+def get_klines(symbol, interval="15m", limit=150, retries=3):
+    for attempt in range(1, retries+1):
+        try:
+            r = requests.get(CONFIG["BINANCE_URL"],
+                params={"symbol": symbol+"USDT","interval":interval,"limit":limit},timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if data and len(data) >= 50:
+                    return [{"open":float(c[1]),"high":float(c[2]),"low":float(c[3]),"close":float(c[4]),"volume":float(c[5])} for c in data]
+            if attempt < retries:
+                log.warning("Binance %s attempt %d failed (%d), retrying...", symbol, attempt, r.status_code)
+                time.sleep(1)
+            else:
+                log.warning("Binance %s all retries failed (%d)", symbol, r.status_code)
+        except Exception as e:
+            if attempt < retries:
+                log.warning("Binance %s attempt %d error: %s, retrying...", symbol, attempt, e)
+                time.sleep(1)
+            else:
+                log.error("Binance %s failed after %d retries: %s", symbol, retries, e)
+    return None
 
 def calc_ema_series(closes, p):
     if len(closes) < p:
@@ -250,12 +293,12 @@ def calc_candle(candles):
     return 0
 
 def calc_volume_surge(candles, lookback=20):
-    if len(candles) < lookback+1: return 0.0
+    if len(candles)<lookback+1: return 0.0
     avg = sum(c["volume"] for c in candles[-lookback-1:-1])/lookback
     curr = candles[-1]["volume"]
-    if avg == 0: return 0.0
-    if curr > avg*1.5: return 1.0
-    if curr > avg*1.2: return 0.5
+    if avg==0: return 0.0
+    if curr>avg*1.5: return 1.0
+    if curr>avg*1.2: return 0.5
     return 0.0
 
 def position_size(entry, sl, capital=None):
@@ -275,6 +318,15 @@ def passes_filters(coin, adx_v, atr_v, price, ema20, ema50, direction):
     if direction=="SHORT" and ema20>ema50:
         log.info("  %s filtered: SHORT uptrend", coin); return False
     return True
+
+def calculate_valid_mins(atr_v, price, adx_v):
+    atr_pct = (atr_v / price) * 100 if price > 0 else 0
+    base = 120
+    if atr_pct > 2:   base -= 30
+    elif atr_pct < 1: base += 30
+    if adx_v > 30:    base += 20
+    elif adx_v < 18:  base -= 20
+    return max(60, min(base, 240))
 
 def analyze(coin):
     c15 = get_klines(coin,"15m",200)
@@ -353,6 +405,17 @@ def analyze(coin):
     else:
         log.info("  %s: score too low",coin); return None
     if not passes_filters(coin,adx_v,atr_v,price,ema20,ema50,direction): return None
+    c5 = get_klines(coin,"5m",50)
+    if c5 and len(c5)>=25:
+        closes5 = [x["close"] for x in c5]
+        ema9_5m = calc_ema(closes5,9)
+        ema21_5m = calc_ema(closes5,21)
+        p5 = closes5[-1]
+        if direction=="LONG" and not(p5>ema9_5m and ema9_5m>ema21_5m):
+            log.info("  %s 5m rejected",coin); return None
+        if direction=="SHORT" and not(p5<ema9_5m and ema9_5m<ema21_5m):
+            log.info("  %s 5m rejected",coin); return None
+        log.info("  %s 5m confirmed: %s",coin,direction)
     dec=2 if price>100 else (4 if price>1 else 6)
     sl_m  =CONFIG["ATR_SL_MULT_STRONG"]  if strong else CONFIG["ATR_SL_MULT_WEAK"]
     tp1_m =CONFIG["ATR_TP1_MULT_STRONG"] if strong else CONFIG["ATR_TP1_MULT_WEAK"]
@@ -371,7 +434,7 @@ def analyze(coin):
         "entry_price":round(price,dec),"entry_low":round(price*0.999,dec),"entry_high":round(price*1.001,dec),
         "sl":round(sl_p,dec),"tp1":round(tp1,dec),"tp2":round(tp2,dec),
         "rr":"1:"+str(rr),"risk":rl,"position_size":pos_size,
-        "valid_mins":CONFIG["VALID_MINS"],"status":"ACTIVE","source":"ai_bot_v5"
+        "valid_mins":calculate_valid_mins(atr_v,price,adx_v),"status":"ACTIVE","source":"ai_bot_v5"
     }
 
 def expire_old_signals():
@@ -380,7 +443,7 @@ def expire_old_signals():
         if r.status_code!=200: return
         now=datetime.datetime.utcnow()
         for sig in r.json():
-            cs=sig.get("created_at",""); vm=sig.get("valid_mins") or 240
+            cs=sig.get("created_at",""); vm=sig.get("valid_mins") or 120
             if not cs: continue
             try:
                 created=datetime.datetime.strptime(cs[:19],"%Y-%m-%dT%H:%M:%S")
@@ -405,18 +468,20 @@ def update_active_signals():
         log.info("Monitoring %d signals",len(active))
         for sig in active:
             coin=sig.get("coin"); direction=sig.get("direction")
-            sl=sig.get("sl"); tp1=sig.get("tp1"); entry=sig.get("entry_price")
+            sl=sig.get("sl"); tp1=sig.get("tp1"); tp2=sig.get("tp2"); entry=sig.get("entry_price")
             if not all([coin,direction,sl,tp1]): continue
             candles=get_klines(coin,"15m",5)
             if not candles: continue
             curr=candles[-1]["close"]
             new_status=None
             if direction=="LONG":
-                if curr>=float(tp1):  new_status="TP1_HIT"
-                elif curr<=float(sl): new_status="SL_HIT"
+                if tp2 and curr>=float(tp2):   new_status="TP2_HIT"
+                elif curr>=float(tp1):         new_status="TP1_HIT"
+                elif curr<=float(sl):          new_status="SL_HIT"
             else:
-                if curr<=float(tp1):  new_status="TP1_HIT"
-                elif curr>=float(sl): new_status="SL_HIT"
+                if tp2 and curr<=float(tp2):   new_status="TP2_HIT"
+                elif curr<=float(tp1):         new_status="TP1_HIT"
+                elif curr>=float(sl):          new_status="SL_HIT"
             if new_status:
                 pnl_pct=None
                 if entry:
@@ -427,7 +492,8 @@ def update_active_signals():
                     headers=HD,json={"status":new_status,"exit_price":round(curr,6),"pnl_pct":pnl_pct},timeout=10)
                 log.info("  %s %s -> %s PnL:%s%%",coin,direction,new_status,pnl_pct)
                 updated=dict(sig); updated["exit_price"]=round(curr,6); updated["pnl_pct"]=pnl_pct
-                notify_all_channels(updated,"tp1" if "TP" in new_status else "sl")
+                st="tp2" if new_status=="TP2_HIT" else ("tp1" if new_status=="TP1_HIT" else "sl")
+                notify_all_channels(updated,st)
             time.sleep(0.2)
     except Exception as e:
         log.error("Monitor: %s",e)
