@@ -475,4 +475,144 @@ def expire_old_signals():
         now = datetime.datetime.utcnow()
         expired_count = 0
         for sig in r.json():
-            cs = sig.get("created_at",""); vm​​​​​​​​​​​​​​​​
+            cs = sig.get("created_at",""); vm = sig.get("valid_mins") or 240
+            if not cs: continue
+            try:
+                created = datetime.datetime.strptime(cs[:19],"%Y-%m-%dT%H:%M:%S")
+                age = (now - created).total_seconds() / 60
+                if age > vm:
+                    patch_r = requests.patch(
+                        SUPA+"/rest/v1/bot_signals?id=eq."+str(sig["id"]),
+                        headers=HD, json={"status":"CLOSED"}, timeout=10)
+                    if patch_r.status_code in (200,201,204):
+                        log.info("  EXPIRED: %s (%.0fmin)", sig["coin"], age)
+                        expired_count += 1
+                    else:
+                        log.error("  EXPIRE PATCH FAILED %s: %d %s", sig["coin"], patch_r.status_code, patch_r.text[:80])
+            except Exception as e:
+                log.error("Expiry error: %s", e)
+        if expired_count:
+            log.info("Expired %d signals", expired_count)
+    except Exception as e:
+        log.error("expire_old_signals: %s", e)
+
+def update_active_signals():
+    try:
+        r = requests.get(SUPA+"/rest/v1/bot_signals?status=eq.ACTIVE&select=*",headers=HD,timeout=10)
+        if r.status_code != 200: return
+        active = r.json()
+        log.info("Monitoring %d active signals", len(active))
+        for sig in active:
+            coin=sig.get("coin"); direction=sig.get("direction")
+            sl=sig.get("sl"); tp1=sig.get("tp1"); tp2=sig.get("tp2"); entry=sig.get("entry_price")
+            if not all([coin,direction,sl,tp1]): continue
+            candles=get_klines(coin,"15m",5)
+            if not candles: continue
+            curr=candles[-1]["close"]
+            new_status=None
+            if direction=="LONG":
+                if tp2 and curr>=float(tp2):   new_status="TP2_HIT"
+                elif curr>=float(tp1):         new_status="TP1_HIT"
+                elif curr<=float(sl):          new_status="SL_HIT"
+            else:
+                if tp2 and curr<=float(tp2):   new_status="TP2_HIT"
+                elif curr<=float(tp1):         new_status="TP1_HIT"
+                elif curr>=float(sl):          new_status="SL_HIT"
+            if new_status:
+                pnl_pct=None
+                ep_val = entry or sig.get("entry_low") or sig.get("entry_high")
+                if ep_val:
+                    ep=float(ep_val)
+                    if ep>0:
+                        pnl_pct=round(((curr-ep)/ep)*100,2) if direction=="LONG" else round(((ep-curr)/ep)*100,2)
+                already_notified = sig.get("tg_notified", False)
+                patch_data = {"status":new_status,"exit_price":round(curr,6),"pnl_pct":pnl_pct,"tg_notified":True}
+                requests.patch(SUPA+"/rest/v1/bot_signals?id=eq."+str(sig["id"]),
+                    headers=HD,json=patch_data,timeout=10)
+                log.info("  %s %s -> %s PnL:%s%%",coin,direction,new_status,pnl_pct)
+                if not already_notified:
+                    updated=dict(sig); updated["exit_price"]=round(curr,6); updated["pnl_pct"]=pnl_pct
+                    st="tp2" if new_status=="TP2_HIT" else ("tp1" if new_status=="TP1_HIT" else "sl")
+                    notify_all_channels(updated,st)
+                else:
+                    log.info("  %s TG already sent, skipping", coin)
+            time.sleep(0.2)
+    except Exception as e:
+        log.error("Monitor: %s",e)
+
+def log_performance_stats():
+    try:
+        r=requests.get(SUPA+"/rest/v1/bot_signals?status=in.(TP1_HIT,SL_HIT,TP2_HIT)&select=status,pnl_pct&limit=100",headers=HD,timeout=10)
+        if r.status_code!=200: return
+        closed=r.json()
+        if not closed: log.info("Stats: no closed trades"); return
+        total=len(closed)
+        wins=[t for t in closed if t.get("status") in ("TP1_HIT","TP2_HIT")]
+        losses=[t for t in closed if t.get("status")=="SL_HIT"]
+        wr=round(len(wins)/total*100,1) if total>0 else 0
+        pv=[t.get("pnl_pct") for t in closed if t.get("pnl_pct") is not None]
+        tp=round(sum(pv),2) if pv else 0
+        gp=sum(p for p in pv if p>0); gl=abs(sum(p for p in pv if p<0))
+        pf=round(gp/gl,2) if gl>0 else 0
+        log.info("STATS: Trades=%d WinRate=%.1f%% PnL=%.2f%% PF=%.2f W/L=%d/%d",total,wr,tp,pf,len(wins),len(losses))
+    except Exception as e:
+        log.error("Stats: %s",e)
+
+def get_active():
+    try:
+        r=requests.get(SUPA+"/rest/v1/bot_signals?status=eq.ACTIVE&select=id,coin&order=created_at.desc",headers=HD,timeout=10)
+        if r.status_code==200: return r.json()
+    except Exception as e:
+        log.error("get_active: %s",e)
+    return []
+
+def post_signal(sig):
+    try:
+        r=requests.post(SUPA+"/rest/v1/bot_signals",headers=HD,json=sig,timeout=10)
+        if r.status_code in (200,201,204):
+            log.info("  POSTED %s %s %d%%",sig["coin"],sig["direction"],sig["confidence"])
+            notify_all_channels(sig,"new")
+        else:
+            log.error("  FAIL %s: %s",sig["coin"],r.text)
+    except Exception as e:
+        log.error("post: %s",e)
+
+def close_old_signals(active):
+    if len(active)<=CONFIG["MAX_ACTIVE"]: return
+    for old in active[CONFIG["MAX_ACTIVE"]:]:
+        try:
+            requests.patch(SUPA+"/rest/v1/bot_signals?id=eq."+str(old["id"]),headers=HD,json={"status":"CLOSED"},timeout=10)
+            log.info("  Closed: %s",old["coin"])
+        except Exception as e:
+            log.error("close: %s",e)
+
+def main():
+    log.info("="*55)
+    log.info("TradexoAI Bot v5 | %s",datetime.datetime.utcnow())
+    log.info("Coins:%d | MinScore:%.1f | Capital:$%.0f | Risk:%.0f%%",
+             len(CONFIG["COINS"]),CONFIG["MIN_SCORE"],CONFIG["CAPITAL"],CONFIG["RISK_PCT"]*100)
+    log_performance_stats()
+    expire_old_signals()
+    update_active_signals()
+    active=get_active()
+    active_coins=[s["coin"] for s in active]
+    log.info("Active: %d",len(active))
+    regime = get_market_regime()
+    new_sigs=[]
+    for coin in CONFIG["COINS"]:
+        if coin in active_coins:
+            log.info("Skip: %s",coin); continue
+        log.info("Scan: %s",coin)
+        sig=analyze(coin, regime)
+        time.sleep(CONFIG["SLEEP"])
+        if sig:
+            log.info("*** %s %s %d%% ***",sig["coin"],sig["direction"],sig["confidence"])
+            new_sigs.append(sig)
+    log.info("New signals: %d",len(new_sigs))
+    for sig in new_sigs:
+        post_signal(sig)
+    close_old_signals(get_active())
+    log.info("Done! Active: %d",len(get_active()))
+    log.info("="*55)
+
+main()
