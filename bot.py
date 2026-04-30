@@ -10,7 +10,7 @@ log = logging.getLogger("TradexoBot")
 CONFIG = {
     "SUPABASE_URL": os.getenv("SUPABASE_URL", ""),
     "SUPABASE_KEY": os.getenv("SUPABASE_SERVICE_KEY", ""),
-    "COINS": ["BTC","ETH","BNB","SOL","XRP","ADA","AVAX","DOGE","DOT","LTC","LINK","ATOM","NEAR","TRX","AAVE","OP","ARB","INJ","SUI","APT"],
+    "COINS": ["BTC","ETH","BNB","SOL","XRP","ADA","AVAX","DOGE","DOT","LTC","LINK","ATOM","NEAR","TRX","AAVE","OP","ARB","SUI","APT"],
     "MIN_SCORE": 3.5,
     "MAX_ACTIVE": 10,
     "MIN_ADX": 18,
@@ -324,6 +324,27 @@ def passes_filters(coin, adx_v, atr_v, price, ema20, ema50, direction):
         log.info("  %s filtered: SHORT in uptrend", coin); return False
     return True
 
+def get_market_regime():
+    try:
+        candles = get_klines("BTC", "1h", 210)
+        if not candles or len(candles) < 200:
+            return "neutral"
+        closes = [x["close"] for x in candles]
+        ema200 = calc_ema(closes, 200)
+        price = closes[-1]
+        if price > ema200 * 1.02:
+            log.info("Market regime: BULL (BTC %.0f > EMA200 %.0f)", price, ema200)
+            return "bull"
+        elif price < ema200 * 0.98:
+            log.info("Market regime: BEAR (BTC %.0f < EMA200 %.0f)", price, ema200)
+            return "bear"
+        else:
+            log.info("Market regime: NEUTRAL (BTC %.0f ~ EMA200 %.0f)", price, ema200)
+            return "neutral"
+    except Exception as e:
+        log.error("Market regime error: %s", e)
+        return "neutral"
+
 def calculate_valid_mins(atr_v, price, adx_v):
     atr_pct = (atr_v / price) * 100 if price > 0 else 0
     base = 120
@@ -333,7 +354,7 @@ def calculate_valid_mins(atr_v, price, adx_v):
     elif adx_v < 18:  base -= 20
     return max(60, min(base, 240))
 
-def analyze(coin):
+def analyze(coin, regime="neutral"):
     c15 = get_klines(coin, "15m", 200)
     c1h = get_klines(coin, "1h", 100)
     if not c15 or len(c15)<80: return None
@@ -404,6 +425,8 @@ def analyze(coin):
         sp=(price-supp)/sr_r
         if sp<0.1:   bull+=1.0
         elif sp>0.9: bear+=1.0
+    if regime=="bull" and bull>bear:   bull+=0.5
+    elif regime=="bear" and bear>bull: bear+=0.5
     conf=min(int((max(bull,bear)/13.0)*100),95)
     log.info("  %s p=%.4f rsi=%.1f adx=%.1f bull=%.1f bear=%.1f conf=%d%%",
              coin,price,rsi15,adx_v,bull,bear,conf)
@@ -492,8 +515,9 @@ def update_active_signals():
                 elif curr>=float(sl):          new_status="SL_HIT"
             if new_status:
                 pnl_pct=None
-                if entry:
-                    ep=float(entry)
+                ep_val = entry or sig.get("entry_low") or sig.get("entry_high")
+                if ep_val:
+                    ep=float(ep_val)
                     if ep>0:
                         pnl_pct=round(((curr-ep)/ep)*100,2) if direction=="LONG" else round(((ep-curr)/ep)*100,2)
                 requests.patch(SUPA+"/rest/v1/bot_signals?id=eq."+str(sig["id"]),
@@ -563,12 +587,13 @@ def main():
     active=get_active()
     active_coins=[s["coin"] for s in active]
     log.info("Active: %d",len(active))
+    regime = get_market_regime()
     new_sigs=[]
     for coin in CONFIG["COINS"]:
         if coin in active_coins:
             log.info("Skip: %s",coin); continue
         log.info("Scan: %s",coin)
-        sig=analyze(coin)
+        sig=analyze(coin, regime)
         time.sleep(CONFIG["SLEEP"])
         if sig:
             log.info("*** %s %s %d%% ***",sig["coin"],sig["direction"],sig["confidence"])
