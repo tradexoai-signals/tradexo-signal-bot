@@ -17,13 +17,13 @@ CONFIG = {
     "MIN_ATR_PCT": 0.2,
     "CAPITAL": 1000.0,
     "RISK_PCT": 0.01,
-    "ATR_SL_MULT_STRONG": 1.5,
-    "ATR_SL_MULT_WEAK": 1.8,
-    "ATR_TP1_MULT_STRONG": 2.5,
-    "ATR_TP1_MULT_WEAK": 2.0,
+    "ATR_SL_MULT_STRONG": 2.0,
+    "ATR_SL_MULT_WEAK": 2.5,
+    "ATR_TP1_MULT_STRONG": 2.0,
+    "ATR_TP1_MULT_WEAK": 1.8,
     "ATR_TP2_MULT_STRONG": 4.5,
     "ATR_TP2_MULT_WEAK": 3.5,
-    "VALID_MINS": 240,
+    "VALID_MINS": 360,
     "SLEEP": 0.5,
     "BINANCE_URL": "https://api.binance.us/api/v3/klines",
     "TELEGRAM_TOKEN": "8333141058:AAGaMRuJBnnr2I2e13cqwklZKSEPzgkKIbc",
@@ -44,9 +44,6 @@ HD   = {
     "Prefer": "return=minimal"
 }
 
-# ============================================================
-# TELEGRAM
-# ============================================================
 _tg_cache = set()
 
 def send_telegram(chat_id, text, cache_key=None):
@@ -86,14 +83,15 @@ def build_signal_message(sig, status_type="new"):
         msg = (
             arrow + " <b>NEW SIGNAL — " + coin + "/USDT</b>\n\n"
             + emoji + " <b>Direction:</b> " + direction + "\n"
-            + "🎯 <b>Confidence:</b> " + str(sig.get("confidence","")) + "%\n"
-            + "💰 <b>Entry:</b> $" + str(sig.get("entry_low","")) + " – $" + str(sig.get("entry_high","")) + "\n"
-            + "🛑 <b>Stop Loss:</b> $" + str(sig.get("sl","")) + "\n"
-            + "✅ <b>TP1:</b> $" + str(sig.get("tp1","")) + "\n"
-            + "🏆 <b>TP2:</b> $" + str(sig.get("tp2","")) + "\n"
-            + "⚖️ <b>R:R Ratio:</b> " + str(sig.get("rr","")) + "\n"
-            + "⚠️ <b>Risk:</b> " + str(sig.get("risk","")) + "\n"
-            + "⏱ <b>Valid:</b> " + str(sig.get("valid_mins",240)) + " mins\n\n"
+            + "🎯 <b>Confidence:</b> " + str(sig.get("confidence","")) + "%\n\n"
+            + "💰 <b>Entry Zone:</b>\n"
+            + "   $" + str(sig.get("entry_low","")) + " – $" + str(sig.get("entry_high","")) + "\n\n"
+            + "🛑 <b>Stop Loss:</b>   $" + str(sig.get("sl","")) + "\n"
+            + "✅ <b>TP1:</b>         $" + str(sig.get("tp1","")) + "\n"
+            + "🏆 <b>TP2:</b>         $" + str(sig.get("tp2","")) + "\n\n"
+            + "⚖️ <b>R:R Ratio:</b>  " + str(sig.get("rr","")) + "\n"
+            + "⚠️ <b>Risk Level:</b> " + str(sig.get("risk","")) + "\n"
+            + "⏱ <b>Valid:</b>       " + str(sig.get("valid_mins",360)) + " mins\n\n"
             + "🤖 <i>TradexoAI Signal Bot</i>\n"
             + "🌐 tradexoai.com"
         )
@@ -132,6 +130,7 @@ def build_signal_message(sig, status_type="new"):
         )
     return msg
 
+
 def notify_all_channels(sig, status_type="new"):
     msg = build_signal_message(sig, status_type)
     channels = CONFIG["TELEGRAM_CHANNELS"]
@@ -155,11 +154,7 @@ def notify_all_channels(sig, status_type="new"):
         for plan_n, chat_id in channels.items():
             send_telegram(chat_id, msg, cache_key=status_type+":"+plan_n+":"+coin_k2)
             time.sleep(0.2)
-
-# ============================================================
-# DATA FETCH
-# ============================================================
-def get_klines(symbol, interval="15m", limit=150, retries=3):
+            def get_klines(symbol, interval="15m", limit=150, retries=3):
     min_candles = min(limit, 50) if limit >= 50 else limit
     for attempt in range(1, retries+1):
         try:
@@ -185,9 +180,7 @@ def get_klines(symbol, interval="15m", limit=150, retries=3):
             else:
                 log.error("Binance %s failed: %s", symbol, e)
     return None
-    # ============================================================
-# INDICATORS
-# ============================================================
+
 def calc_ema_series(closes, p):
     if len(closes) < p:
         return []
@@ -316,9 +309,7 @@ def calc_volume_surge(candles, lookback=20):
     if curr>avg*1.2: return 0.5
     return 0.0
 
-
 def get_4h_trend(coin):
-    """4H higher timeframe trend - multi-TF confirmation."""
     try:
         kl = get_klines(coin, "4h", 60)
         if not kl or len(kl) < 50: return 0
@@ -335,7 +326,6 @@ def get_4h_trend(coin):
         return 0
 
 def detect_rsi_divergence(closes, rsi_vals):
-    """RSI divergence - powerful leading reversal signal."""
     try:
         if len(closes) < 20 or len(rsi_vals) < 20: return 0
         prices = closes[-20:]
@@ -357,14 +347,12 @@ def detect_rsi_divergence(closes, rsi_vals):
         return 0
 
 def find_swing_levels(klines, lookback=10):
-    """Find swing high/low for SL placement."""
     if not klines or len(klines) < lookback: return None, None
     highs = [k["high"] for k in klines[-lookback:]]
     lows = [k["low"] for k in klines[-lookback:]]
     return max(highs), min(lows)
 
 def get_order_book_signal(symbol):
-    """Order book imbalance - leading indicator."""
     try:
         r = requests.get(CONFIG["BINANCE_URL"].replace('/klines','') + '/depth',
             params={"symbol": symbol+"USDT", "limit": 20}, timeout=8)
@@ -385,7 +373,6 @@ def get_order_book_signal(symbol):
         return 0.0
 
 def get_funding_rate(symbol):
-    """Funding rate - leading indicator for futures sentiment."""
     try:
         r = requests.get("https://fapi.binance.com/fapi/v1/premiumIndex",
             params={"symbol": symbol+"USDT"}, timeout=8)
@@ -397,7 +384,7 @@ def get_funding_rate(symbol):
         elif rate > 0.05:  return -1.5
         elif rate > 0.01:  return -0.75
         return 0.0
-    except Exception as e:
+    except:
         return 0.0
 
 def position_size(price, sl):
@@ -416,11 +403,7 @@ def passes_filters(coin, adx_v, atr_v, price, ema20, ema50, direction):
     if direction=="SHORT" and ema20>ema50:
         log.info("  %s filtered: SHORT in uptrend", coin); return False
     return True
-# ============================================================
-# ANALYZE
-# ============================================================
 def get_market_regime():
-    """Check BTC vs EMA200 to determine bull/bear market."""
     try:
         candles = get_klines("BTC", "1h", 210)
         if not candles or len(candles) < 200:
@@ -448,7 +431,7 @@ def calculate_valid_mins(atr_v, price, adx_v):
     elif atr_pct < 1: base += 30
     if adx_v > 30:    base += 20
     elif adx_v < 18:  base -= 20
-    return max(60, min(base, 240))
+    return max(60, min(base, 360))
 
 def analyze(coin, regime="neutral"):
     c15 = get_klines(coin, "15m", 200)
@@ -555,9 +538,9 @@ def analyze(coin, regime="neutral"):
     conf = min(conf, 95)
     log.info("  %s p=%.4f rsi=%.1f adx=%.1f 4h=%d div=%d ob=%.1f fr=%.1f bull=%.1f bear=%.1f conf=%d%%",
              coin,price,rsi15,adx_v,trend4h,divergence,ob_signal,fr_signal,bull,bear,conf)
-    if adx_v >= 30:   min_score = 7.5
-    elif adx_v >= 25: min_score = 7.0
-    else:             min_score = 6.2
+    if adx_v >= 30:   min_score = 8.0
+    elif adx_v >= 25: min_score = 7.5
+    else:             min_score = 7.0
     if bull >= min_score and bull > bear:   direction,action="LONG","BUY"
     elif bear >= min_score and bear > bull: direction,action="SHORT","SELL"
     else:
@@ -567,7 +550,6 @@ def analyze(coin, regime="neutral"):
     if direction == "SHORT" and trend4h == 1:
         log.info("  %s: SHORT rejected - 4H uptrend",coin); return None
     if not passes_filters(coin,adx_v,atr_v,price,ema20,ema50,direction): return None
-
     c5 = get_klines(coin,"5m",50)
     if c5 and len(c5)>=25:
         closes5 = [x["close"] for x in c5]
@@ -575,11 +557,9 @@ def analyze(coin, regime="neutral"):
         ema21_5m = calc_ema(closes5,21)
         p5 = closes5[-1]
         if direction=="LONG" and not(p5>ema9_5m and ema9_5m>ema21_5m):
-            log.info("  %s 5m rejected: p5=%.4f ema9=%.4f ema21=%.4f",coin,p5,ema9_5m,ema21_5m)
-            return None
+            log.info("  %s 5m rejected",coin); return None
         if direction=="SHORT" and not(p5<ema9_5m and ema9_5m<ema21_5m):
-            log.info("  %s 5m rejected: p5=%.4f ema9=%.4f ema21=%.4f",coin,p5,ema9_5m,ema21_5m)
-            return None
+            log.info("  %s 5m rejected",coin); return None
         log.info("  %s 5m confirmed: %s",coin,direction)
     dec=2 if price>100 else (4 if price>1 else 6)
     sl_m  =CONFIG["ATR_SL_MULT_STRONG"]  if strong else CONFIG["ATR_SL_MULT_WEAK"]
@@ -616,9 +596,6 @@ def analyze(coin, regime="neutral"):
         "valid_mins":calculate_valid_mins(atr_v,price,adx_v),"status":"ACTIVE","source":"ai_bot_v5"
     }
 
-# ============================================================
-# SIGNAL EXPIRY
-# ============================================================
 def expire_old_signals():
     try:
         r = requests.get(SUPA+"/rest/v1/bot_signals?status=eq.ACTIVE&select=id,coin,direction,created_at,valid_mins",headers=HD,timeout=10)
@@ -627,7 +604,7 @@ def expire_old_signals():
         now = datetime.datetime.utcnow()
         expired_count = 0
         for sig in r.json():
-            cs = sig.get("created_at",""); vm = sig.get("valid_mins") or 240
+            cs = sig.get("created_at",""); vm = sig.get("valid_mins") or 360
             if not cs: continue
             try:
                 created = datetime.datetime.strptime(cs[:19],"%Y-%m-%dT%H:%M:%S")
@@ -677,7 +654,7 @@ def update_active_signals():
                         pnl_pct=round(((curr-ep)/ep)*100,2) if direction=="LONG" else round(((ep-curr)/ep)*100,2)
                 already_notified = sig.get("tg_notified", False)
                 patch_data = {"status":new_status,"exit_price":round(curr,6),"pnl_pct":pnl_pct,"tg_notified":True}
-                resp = requests.patch(SUPA+"/rest/v1/bot_signals?id=eq."+str(sig["id"]),
+                requests.patch(SUPA+"/rest/v1/bot_signals?id=eq."+str(sig["id"]),
                     headers=HD,json=patch_data,timeout=10)
                 log.info("  %s %s -> %s PnL:%s%%",coin,direction,new_status,pnl_pct)
                 if not already_notified:
@@ -711,9 +688,6 @@ def log_performance_stats():
     except Exception as e:
         log.error("Stats error: %s", e)
 
-# ============================================================
-# SUPABASE HELPERS
-# ============================================================
 def get_active():
     try:
         r = requests.get(
@@ -745,23 +719,17 @@ def close_old_signals(active):
         except Exception as e:
             log.error("close: %s", e)
 
-# ============================================================
-# MAIN
-# ============================================================
 def main():
     log.info("="*55)
     log.info("TradexoAI Bot v6 | %s", datetime.datetime.utcnow())
     log.info("Coins:%d | MinScore:%.1f | Capital:$%.0f | Risk:%.0f%%",
              len(CONFIG["COINS"]),CONFIG["MIN_SCORE"],CONFIG["CAPITAL"],CONFIG["RISK_PCT"]*100)
-
     log_performance_stats()
     expire_old_signals()
     update_active_signals()
-
     active = get_active()
     active_coins = [s["coin"] for s in active]
     log.info("Active: %d", len(active))
-
     regime = get_market_regime()
     new_sigs = []
     for coin in CONFIG["COINS"]:
@@ -774,11 +742,9 @@ def main():
         if sig:
             log.info("*** %s %s %d%% ***", sig["coin"],sig["direction"],sig["confidence"])
             new_sigs.append(sig)
-
     log.info("New signals: %d", len(new_sigs))
     for sig in new_sigs:
         post_signal(sig)
-
     close_old_signals(get_active())
     log.info("Done! Active: %d", len(get_active()))
     log.info("="*55)
