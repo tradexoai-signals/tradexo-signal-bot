@@ -154,7 +154,7 @@ def notify_all_channels(sig, status_type="new"):
         for plan_n, chat_id in channels.items():
             send_telegram(chat_id, msg, cache_key=status_type+":"+plan_n+":"+coin_k2)
             time.sleep(0.2)
-            def get_klines(symbol, interval="15m", limit=150, retries=3):
+def get_klines(symbol, interval="15m", limit=150, retries=3):
     min_candles = min(limit, 50) if limit >= 50 else limit
     for attempt in range(1, retries+1):
         try:
@@ -750,4 +750,3 @@ def main():
     log.info("="*55)
 
 main()
-
