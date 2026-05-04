@@ -11,16 +11,16 @@ CONFIG = {
     "SUPABASE_URL": os.getenv("SUPABASE_URL", ""),
     "SUPABASE_KEY": os.getenv("SUPABASE_SERVICE_KEY", ""),
     "COINS": ["BTC","ETH","BNB","SOL","XRP","ADA","AVAX","DOGE","DOT","LTC","LINK","ATOM","NEAR","TRX","AAVE","OP","ARB","SUI","APT"],
-    "MIN_SCORE": 3.5,
+    "MIN_SCORE": 6.2,
     "MAX_ACTIVE": 10,
-    "MIN_ADX": 18,
-    "MIN_ATR_PCT": 0.15,
+    "MIN_ADX": 25,
+    "MIN_ATR_PCT": 0.2,
     "CAPITAL": 1000.0,
     "RISK_PCT": 0.01,
-    "ATR_SL_MULT_STRONG": 1.2,
-    "ATR_SL_MULT_WEAK": 1.5,
-    "ATR_TP1_MULT_STRONG": 2.2,
-    "ATR_TP1_MULT_WEAK": 1.8,
+    "ATR_SL_MULT_STRONG": 1.5,
+    "ATR_SL_MULT_WEAK": 1.8,
+    "ATR_TP1_MULT_STRONG": 2.5,
+    "ATR_TP1_MULT_WEAK": 2.0,
     "ATR_TP2_MULT_STRONG": 4.5,
     "ATR_TP2_MULT_WEAK": 3.5,
     "VALID_MINS": 240,
@@ -44,6 +44,9 @@ HD   = {
     "Prefer": "return=minimal"
 }
 
+# ============================================================
+# TELEGRAM
+# ============================================================
 _tg_cache = set()
 
 def send_telegram(chat_id, text, cache_key=None):
@@ -72,11 +75,13 @@ def send_telegram(chat_id, text, cache_key=None):
             log.error("TG attempt %d error: %s",attempt,e)
         if attempt<3: time.sleep(1)
 
+
 def build_signal_message(sig, status_type="new"):
     direction = sig.get("direction","")
     coin = sig.get("coin","")
     emoji = "🟢" if direction == "LONG" else "🔴"
     arrow = "📈" if direction == "LONG" else "📉"
+
     if status_type == "new":
         msg = (
             arrow + " <b>NEW SIGNAL — " + coin + "/USDT</b>\n\n"
@@ -136,7 +141,7 @@ def notify_all_channels(sig, status_type="new"):
             + " <b>NEW SIGNAL: " + sig.get("coin","") + "/USDT</b>\n"
             + ("🟢" if sig.get("direction")=="LONG" else "🔴")
             + " " + sig.get("direction","") + " | Conf: " + str(sig.get("confidence","")) + "%\n\n"
-            + "🔒 <i>Full details available for paid members</i>\n"
+            + "🔒 <i>Full details (Entry, SL, TP) available for paid members</i>\n"
             + "👉 tradexoai.com"
         )
         coin_k = sig.get("coin","")
@@ -151,12 +156,16 @@ def notify_all_channels(sig, status_type="new"):
             send_telegram(chat_id, msg, cache_key=status_type+":"+plan_n+":"+coin_k2)
             time.sleep(0.2)
 
+# ============================================================
+# DATA FETCH
+# ============================================================
 def get_klines(symbol, interval="15m", limit=150, retries=3):
     min_candles = min(limit, 50) if limit >= 50 else limit
     for attempt in range(1, retries+1):
         try:
             r = requests.get(CONFIG["BINANCE_URL"],
-                params={"symbol": symbol+"USDT","interval":interval,"limit":limit},timeout=10)
+                params={"symbol": symbol+"USDT","interval":interval,"limit":limit},
+                timeout=10)
             if r.status_code == 200:
                 data = r.json()
                 if data and len(data) >= min_candles:
@@ -176,7 +185,9 @@ def get_klines(symbol, interval="15m", limit=150, retries=3):
             else:
                 log.error("Binance %s failed: %s", symbol, e)
     return None
-
+    # ============================================================
+# INDICATORS
+# ============================================================
 def calc_ema_series(closes, p):
     if len(closes) < p:
         return []
@@ -305,25 +316,111 @@ def calc_volume_surge(candles, lookback=20):
     if curr>avg*1.2: return 0.5
     return 0.0
 
-def position_size(entry, sl, capital=None):
-    cap = capital or CONFIG["CAPITAL"]
-    risk_amt = cap * CONFIG["RISK_PCT"]
-    sl_dist = abs(entry - sl)
-    if sl_dist == 0: return 0.0
+
+def get_4h_trend(coin):
+    """4H higher timeframe trend - multi-TF confirmation."""
+    try:
+        kl = get_klines(coin, "4h", 60)
+        if not kl or len(kl) < 50: return 0
+        closes = [k["close"] for k in kl]
+        e20 = calc_ema(closes, 20)
+        e50 = calc_ema(closes, 50)
+        if not e20 or not e50: return 0
+        price = closes[-1]
+        if e20 > e50 and price > e20: return 1
+        elif e20 < e50 and price < e20: return -1
+        return 0
+    except Exception as e:
+        log.error("4H trend %s: %s", coin, e)
+        return 0
+
+def detect_rsi_divergence(closes, rsi_vals):
+    """RSI divergence - powerful leading reversal signal."""
+    try:
+        if len(closes) < 20 or len(rsi_vals) < 20: return 0
+        prices = closes[-20:]
+        rsis = rsi_vals[-20:]
+        p_low_idx = prices.index(min(prices))
+        p_high_idx = prices.index(max(prices))
+        if p_low_idx > 10:
+            prev_low = min(prices[:p_low_idx-2])
+            prev_low_idx = prices[:p_low_idx-2].index(prev_low)
+            if prices[p_low_idx] < prev_low and rsis[p_low_idx] > rsis[prev_low_idx]:
+                return 1
+        if p_high_idx > 10:
+            prev_high = max(prices[:p_high_idx-2])
+            prev_high_idx = prices[:p_high_idx-2].index(prev_high)
+            if prices[p_high_idx] > prev_high and rsis[p_high_idx] < rsis[prev_high_idx]:
+                return -1
+        return 0
+    except:
+        return 0
+
+def find_swing_levels(klines, lookback=10):
+    """Find swing high/low for SL placement."""
+    if not klines or len(klines) < lookback: return None, None
+    highs = [k["high"] for k in klines[-lookback:]]
+    lows = [k["low"] for k in klines[-lookback:]]
+    return max(highs), min(lows)
+
+def get_order_book_signal(symbol):
+    """Order book imbalance - leading indicator."""
+    try:
+        r = requests.get(CONFIG["BINANCE_URL"].replace('/klines','') + '/depth',
+            params={"symbol": symbol+"USDT", "limit": 20}, timeout=8)
+        if r.status_code != 200: return 0.0
+        book = r.json()
+        bid_vol = sum(float(b[1]) for b in book.get('bids', [])[:10])
+        ask_vol = sum(float(a[1]) for a in book.get('asks', [])[:10])
+        total = bid_vol + ask_vol
+        if total == 0: return 0.0
+        ratio = bid_vol / total
+        if ratio > 0.65:   return 1.5
+        elif ratio > 0.55: return 0.75
+        elif ratio < 0.35: return -1.5
+        elif ratio < 0.45: return -0.75
+        return 0.0
+    except Exception as e:
+        log.error("OrderBook %s: %s", symbol, e)
+        return 0.0
+
+def get_funding_rate(symbol):
+    """Funding rate - leading indicator for futures sentiment."""
+    try:
+        r = requests.get("https://fapi.binance.com/fapi/v1/premiumIndex",
+            params={"symbol": symbol+"USDT"}, timeout=8)
+        if r.status_code != 200: return 0.0
+        data = r.json()
+        rate = float(data.get('lastFundingRate', 0)) * 100
+        if rate < -0.05:   return 1.5
+        elif rate < -0.01: return 0.75
+        elif rate > 0.05:  return -1.5
+        elif rate > 0.01:  return -0.75
+        return 0.0
+    except Exception as e:
+        return 0.0
+
+def position_size(price, sl):
+    risk_amt = CONFIG["CAPITAL"] * CONFIG["RISK_PCT"]
+    sl_dist = abs(price - sl)
+    if sl_dist == 0: return 0
     return round(risk_amt / sl_dist, 6)
 
 def passes_filters(coin, adx_v, atr_v, price, ema20, ema50, direction):
-    if adx_v < CONFIG["MIN_ADX"]:
+    if adx_v < 23:
         log.info("  %s filtered: ADX %.1f low", coin, adx_v); return False
-    if (atr_v/price)*100 < CONFIG["MIN_ATR_PCT"]:
+    if (atr_v/price)*100 < 0.15:
         log.info("  %s filtered: low volatility", coin); return False
     if direction=="LONG"  and ema20<ema50:
         log.info("  %s filtered: LONG in downtrend", coin); return False
     if direction=="SHORT" and ema20>ema50:
         log.info("  %s filtered: SHORT in uptrend", coin); return False
     return True
-
+# ============================================================
+# ANALYZE
+# ============================================================
 def get_market_regime():
+    """Check BTC vs EMA200 to determine bull/bear market."""
     try:
         candles = get_klines("BTC", "1h", 210)
         if not candles or len(candles) < 200:
@@ -370,6 +467,14 @@ def analyze(coin, regime="neutral"):
     csig = calc_candle(c15)
     vsurge = calc_volume_surge(c15)
     if not all([rsi15,atr_v,ema20,ema50]): return None
+    ob_signal = get_order_book_signal(coin)
+    fr_signal = get_funding_rate(coin)
+    trend4h = get_4h_trend(coin)
+    rsi_vals = []
+    for _i in range(20, len(closes15)):
+        _r = calc_rsi(closes15[:_i+1])
+        if _r is not None: rsi_vals.append(_r)
+    divergence = detect_rsi_divergence(closes15[-len(rsi_vals):], rsi_vals) if rsi_vals else 0
     adx_v = adx_r[0] if adx_r and adx_r[0] else 20.0
     pdi   = adx_r[1] if adx_r and adx_r[1] else 0.0
     mdi   = adx_r[2] if adx_r and adx_r[2] else 0.0
@@ -424,16 +529,45 @@ def analyze(coin, regime="neutral"):
         sp=(price-supp)/sr_r
         if sp<0.1:   bull+=1.0
         elif sp>0.9: bear+=1.0
+    if ob_signal > 0:   bull += ob_signal
+    elif ob_signal < 0: bear += abs(ob_signal)
+    if fr_signal > 0:   bull += fr_signal
+    elif fr_signal < 0: bear += abs(fr_signal)
     if regime=="bull" and bull>bear:   bull+=0.5
     elif regime=="bear" and bear>bull: bear+=0.5
-    conf=min(int((max(bull,bear)/13.0)*100),95)
-    log.info("  %s p=%.4f rsi=%.1f adx=%.1f bull=%.1f bear=%.1f conf=%d%%",
-             coin,price,rsi15,adx_v,bull,bear,conf)
-    if bull>=CONFIG["MIN_SCORE"] and bull>bear:   direction,action="LONG","BUY"
-    elif bear>=CONFIG["MIN_SCORE"] and bear>bull: direction,action="SHORT","SELL"
+    if trend4h == 1:    bull += 1.5
+    elif trend4h == -1: bear += 1.5
+    if divergence == 1:    bull += 2.0
+    elif divergence == -1: bear += 2.0
+    if trend1h == (1 if bull > bear else -1):
+        if bull > bear: bull += 1.2
+        else: bear += 1.2
+    if strong and trend1h == (1 if bull > bear else -1) and vsurge > 0:
+        if bull > bear: bull += 1.0
+        else: bear += 1.0
+    base_score = max(bull, bear)
+    if strong:
+        conf = int((base_score / 11.5) * 100)
     else:
-        log.info("  %s: score too low",coin); return None
+        conf = int((base_score / 13.5) * 100)
+    if trend1h != 0: conf += 3
+    if vsurge > 0:   conf += 2
+    conf = min(conf, 95)
+    log.info("  %s p=%.4f rsi=%.1f adx=%.1f 4h=%d div=%d ob=%.1f fr=%.1f bull=%.1f bear=%.1f conf=%d%%",
+             coin,price,rsi15,adx_v,trend4h,divergence,ob_signal,fr_signal,bull,bear,conf)
+    if adx_v >= 30:   min_score = 7.5
+    elif adx_v >= 25: min_score = 7.0
+    else:             min_score = 6.2
+    if bull >= min_score and bull > bear:   direction,action="LONG","BUY"
+    elif bear >= min_score and bear > bull: direction,action="SHORT","SELL"
+    else:
+        log.info("  %s: score too low (%.1f < %.1f)",coin,max(bull,bear),min_score); return None
+    if direction == "LONG" and trend4h == -1:
+        log.info("  %s: LONG rejected - 4H downtrend",coin); return None
+    if direction == "SHORT" and trend4h == 1:
+        log.info("  %s: SHORT rejected - 4H uptrend",coin); return None
     if not passes_filters(coin,adx_v,atr_v,price,ema20,ema50,direction): return None
+
     c5 = get_klines(coin,"5m",50)
     if c5 and len(c5)>=25:
         closes5 = [x["close"] for x in c5]
@@ -441,18 +575,33 @@ def analyze(coin, regime="neutral"):
         ema21_5m = calc_ema(closes5,21)
         p5 = closes5[-1]
         if direction=="LONG" and not(p5>ema9_5m and ema9_5m>ema21_5m):
-            log.info("  %s 5m rejected",coin); return None
+            log.info("  %s 5m rejected: p5=%.4f ema9=%.4f ema21=%.4f",coin,p5,ema9_5m,ema21_5m)
+            return None
         if direction=="SHORT" and not(p5<ema9_5m and ema9_5m<ema21_5m):
-            log.info("  %s 5m rejected",coin); return None
+            log.info("  %s 5m rejected: p5=%.4f ema9=%.4f ema21=%.4f",coin,p5,ema9_5m,ema21_5m)
+            return None
         log.info("  %s 5m confirmed: %s",coin,direction)
     dec=2 if price>100 else (4 if price>1 else 6)
     sl_m  =CONFIG["ATR_SL_MULT_STRONG"]  if strong else CONFIG["ATR_SL_MULT_WEAK"]
     tp1_m =CONFIG["ATR_TP1_MULT_STRONG"] if strong else CONFIG["ATR_TP1_MULT_WEAK"]
     tp2_m =CONFIG["ATR_TP2_MULT_STRONG"] if strong else CONFIG["ATR_TP2_MULT_WEAK"]
+    _swing_h, _swing_l = find_swing_levels(c15, 10)
     if direction=="LONG":
-        sl_p=price-(atr_v*sl_m); tp1=price+(atr_v*tp1_m); tp2=price+(atr_v*tp2_m)
+        atr_sl = price - (atr_v * sl_m)
+        if _swing_l and _swing_l < price and _swing_l > atr_sl:
+            sl_p = _swing_l - (atr_v * 0.3)
+        else:
+            sl_p = atr_sl
+        tp1 = price + (atr_v * tp1_m)
+        tp2 = price + (atr_v * tp2_m)
     else:
-        sl_p=price+(atr_v*sl_m); tp1=price-(atr_v*tp1_m); tp2=price-(atr_v*tp2_m)
+        atr_sl = price + (atr_v * sl_m)
+        if _swing_h and _swing_h > price and _swing_h < atr_sl:
+            sl_p = _swing_h + (atr_v * 0.3)
+        else:
+            sl_p = atr_sl
+        tp1 = price - (atr_v * tp1_m)
+        tp2 = price - (atr_v * tp2_m)
     risk=abs(price-sl_p)
     rr=round(abs(tp1-price)/risk,1) if risk>0 else 2.0
     ap=(atr_v/price)*100
@@ -467,6 +616,9 @@ def analyze(coin, regime="neutral"):
         "valid_mins":calculate_valid_mins(atr_v,price,adx_v),"status":"ACTIVE","source":"ai_bot_v5"
     }
 
+# ============================================================
+# SIGNAL EXPIRY
+# ============================================================
 def expire_old_signals():
     try:
         r = requests.get(SUPA+"/rest/v1/bot_signals?status=eq.ACTIVE&select=id,coin,direction,created_at,valid_mins",headers=HD,timeout=10)
@@ -487,8 +639,6 @@ def expire_old_signals():
                     if patch_r.status_code in (200,201,204):
                         log.info("  EXPIRED: %s (%.0fmin)", sig["coin"], age)
                         expired_count += 1
-                    else:
-                        log.error("  EXPIRE PATCH FAILED %s: %d %s", sig["coin"], patch_r.status_code, patch_r.text[:80])
             except Exception as e:
                 log.error("Expiry error: %s", e)
         if expired_count:
@@ -527,92 +677,110 @@ def update_active_signals():
                         pnl_pct=round(((curr-ep)/ep)*100,2) if direction=="LONG" else round(((ep-curr)/ep)*100,2)
                 already_notified = sig.get("tg_notified", False)
                 patch_data = {"status":new_status,"exit_price":round(curr,6),"pnl_pct":pnl_pct,"tg_notified":True}
-                requests.patch(SUPA+"/rest/v1/bot_signals?id=eq."+str(sig["id"]),
+                resp = requests.patch(SUPA+"/rest/v1/bot_signals?id=eq."+str(sig["id"]),
                     headers=HD,json=patch_data,timeout=10)
                 log.info("  %s %s -> %s PnL:%s%%",coin,direction,new_status,pnl_pct)
                 if not already_notified:
                     updated=dict(sig); updated["exit_price"]=round(curr,6); updated["pnl_pct"]=pnl_pct
                     st="tp2" if new_status=="TP2_HIT" else ("tp1" if new_status=="TP1_HIT" else "sl")
                     notify_all_channels(updated,st)
-                else:
-                    log.info("  %s TG already sent, skipping", coin)
             time.sleep(0.2)
     except Exception as e:
         log.error("Monitor: %s",e)
 
 def log_performance_stats():
     try:
-        r=requests.get(SUPA+"/rest/v1/bot_signals?status=in.(TP1_HIT,SL_HIT,TP2_HIT)&select=status,pnl_pct&limit=100",headers=HD,timeout=10)
-        if r.status_code!=200: return
-        closed=r.json()
-        if not closed: log.info("Stats: no closed trades"); return
-        total=len(closed)
-        wins=[t for t in closed if t.get("status") in ("TP1_HIT","TP2_HIT")]
-        losses=[t for t in closed if t.get("status")=="SL_HIT"]
-        wr=round(len(wins)/total*100,1) if total>0 else 0
-        pv=[t.get("pnl_pct") for t in closed if t.get("pnl_pct") is not None]
-        tp=round(sum(pv),2) if pv else 0
-        gp=sum(p for p in pv if p>0); gl=abs(sum(p for p in pv if p<0))
-        pf=round(gp/gl,2) if gl>0 else 0
-        log.info("STATS: Trades=%d WinRate=%.1f%% PnL=%.2f%% PF=%.2f W/L=%d/%d",total,wr,tp,pf,len(wins),len(losses))
+        r = requests.get(
+            SUPA+"/rest/v1/bot_signals?status=in.(TP1_HIT,SL_HIT,TP2_HIT)&select=status,pnl_pct&order=created_at.desc&limit=100",
+            headers=HD, timeout=10)
+        if r.status_code != 200: return
+        closed = r.json()
+        if not closed:
+            log.info("Stats: no closed trades yet"); return
+        total = len(closed)
+        wins   = [t for t in closed if t.get("status") in ("TP1_HIT","TP2_HIT")]
+        losses = [t for t in closed if t.get("status")=="SL_HIT"]
+        win_rate = round(len(wins)/total*100,1) if total>0 else 0
+        pnl_vals = [t.get("pnl_pct") for t in closed if t.get("pnl_pct") is not None]
+        total_pnl = round(sum(pnl_vals),2) if pnl_vals else 0
+        gross_profit = sum(p for p in pnl_vals if p>0)
+        gross_loss   = abs(sum(p for p in pnl_vals if p<0))
+        pf = round(gross_profit/gross_loss,2) if gross_loss>0 else 0
+        log.info("=== STATS: Trades=%d | WinRate=%.1f%% | PnL=%.2f%% | PF=%.2f | W/L=%d/%d ===",
+                 total,win_rate,total_pnl,pf,len(wins),len(losses))
     except Exception as e:
-        log.error("Stats: %s",e)
+        log.error("Stats error: %s", e)
 
+# ============================================================
+# SUPABASE HELPERS
+# ============================================================
 def get_active():
     try:
-        r=requests.get(SUPA+"/rest/v1/bot_signals?status=eq.ACTIVE&select=id,coin&order=created_at.desc",headers=HD,timeout=10)
+        r = requests.get(
+            SUPA+"/rest/v1/bot_signals?status=eq.ACTIVE&select=id,coin&order=created_at.desc",
+            headers=HD, timeout=10)
         if r.status_code==200: return r.json()
     except Exception as e:
-        log.error("get_active: %s",e)
+        log.error("get_active: %s", e)
     return []
 
 def post_signal(sig):
     try:
-        r=requests.post(SUPA+"/rest/v1/bot_signals",headers=HD,json=sig,timeout=10)
+        r = requests.post(SUPA+"/rest/v1/bot_signals", headers=HD, json=sig, timeout=10)
         if r.status_code in (200,201,204):
-            log.info("  POSTED %s %s %d%%",sig["coin"],sig["direction"],sig["confidence"])
-            notify_all_channels(sig,"new")
+            log.info("  POSTED %s %s %d%%", sig["coin"],sig["direction"],sig["confidence"])
+            notify_all_channels(sig, "new")
         else:
-            log.error("  FAIL %s: %s",sig["coin"],r.text)
+            log.error("  FAIL %s: %s", sig["coin"], r.text)
     except Exception as e:
-        log.error("post: %s",e)
+        log.error("post: %s", e)
 
 def close_old_signals(active):
     if len(active)<=CONFIG["MAX_ACTIVE"]: return
     for old in active[CONFIG["MAX_ACTIVE"]:]:
         try:
-            requests.patch(SUPA+"/rest/v1/bot_signals?id=eq."+str(old["id"]),headers=HD,json={"status":"CLOSED"},timeout=10)
-            log.info("  Closed: %s",old["coin"])
+            requests.patch(SUPA+"/rest/v1/bot_signals?id=eq."+str(old["id"]),
+                           headers=HD, json={"status":"CLOSED"}, timeout=10)
+            log.info("  Closed: %s", old["coin"])
         except Exception as e:
-            log.error("close: %s",e)
+            log.error("close: %s", e)
 
+# ============================================================
+# MAIN
+# ============================================================
 def main():
     log.info("="*55)
-    log.info("TradexoAI Bot v5 | %s",datetime.datetime.utcnow())
+    log.info("TradexoAI Bot v6 | %s", datetime.datetime.utcnow())
     log.info("Coins:%d | MinScore:%.1f | Capital:$%.0f | Risk:%.0f%%",
              len(CONFIG["COINS"]),CONFIG["MIN_SCORE"],CONFIG["CAPITAL"],CONFIG["RISK_PCT"]*100)
+
     log_performance_stats()
     expire_old_signals()
     update_active_signals()
-    active=get_active()
-    active_coins=[s["coin"] for s in active]
-    log.info("Active: %d",len(active))
+
+    active = get_active()
+    active_coins = [s["coin"] for s in active]
+    log.info("Active: %d", len(active))
+
     regime = get_market_regime()
-    new_sigs=[]
+    new_sigs = []
     for coin in CONFIG["COINS"]:
         if coin in active_coins:
-            log.info("Skip: %s",coin); continue
-        log.info("Scan: %s",coin)
-        sig=analyze(coin, regime)
+            log.info("Skip: %s", coin)
+            continue
+        log.info("Scan: %s", coin)
+        sig = analyze(coin, regime)
         time.sleep(CONFIG["SLEEP"])
         if sig:
-            log.info("*** %s %s %d%% ***",sig["coin"],sig["direction"],sig["confidence"])
+            log.info("*** %s %s %d%% ***", sig["coin"],sig["direction"],sig["confidence"])
             new_sigs.append(sig)
-    log.info("New signals: %d",len(new_sigs))
+
+    log.info("New signals: %d", len(new_sigs))
     for sig in new_sigs:
         post_signal(sig)
+
     close_old_signals(get_active())
-    log.info("Done! Active: %d",len(get_active()))
+    log.info("Done! Active: %d", len(get_active()))
     log.info("="*55)
 
 main()
